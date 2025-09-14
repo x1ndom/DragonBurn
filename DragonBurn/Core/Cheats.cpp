@@ -35,7 +35,7 @@ void Menu();
 void Visual(const CEntity&);
 void Radar(Base_Radar, const CEntity&);
 void Trigger(const CEntity&, const int&);
-void AIM(const CEntity&, std::vector<Vec3>);
+void AIM(const CEntity&, std::vector<std::pair<Vec3, int>>);
 void MiscFuncs(CEntity&);
 void RenderCrosshair(ImDrawList*, const CEntity&);
 void RadarSetting(Base_Radar&);
@@ -88,7 +88,7 @@ void Cheats::Run()
 	}
 
 	// aimbot data
-	std::vector<Vec3> AimPosList;
+	std::vector<std::pair<Vec3, int>> AimPosList;
 
 	// radar data
 	Base_Radar GameRadar;
@@ -229,14 +229,11 @@ std::vector<EntityResult> Cheats::ProcessEntities(CEntity& localEntity, int& loc
 }
 
 // render, collect aim data
-void Cheats::HandleEnts(const std::vector<EntityResult>& entities, CEntity& localEntity, 
-	int localPlayerControllerIndex, Base_Radar& gameRadar, std::vector<Vec3>& aimPosList)
+void Cheats::HandleEnts(const std::vector<EntityResult>& entities, CEntity& localEntity,
+	int localPlayerControllerIndex, Base_Radar& gameRadar, std::vector<std::pair<Vec3, int>>& aimPosList)
 {
 	// healthbar map (static)
 	static std::map<DWORD64, Render::HealthBar> HealthBarMap;
-
-	// aimbot data
-	float MaxAimDistance = 100000;
 
 	for (const auto& result : entities)
 	{
@@ -253,7 +250,7 @@ void Cheats::HandleEnts(const std::vector<EntityResult>& entities, CEntity& loca
 		// add entity to radar
 		if (RadarCFG::ShowRadar && localEntity.Controller.TeamID != 0)
 		{
-			gameRadar.AddPoint(localEntity.Pawn.Pos, localEntity.Pawn.ViewAngle.y, 
+			gameRadar.AddPoint(localEntity.Pawn.Pos, localEntity.Pawn.ViewAngle.y,
 				entity.Pawn.Pos, ImColor(237, 85, 106, 200), RadarCFG::RadarType, entity.Pawn.ViewAngle.y);
 		}
 
@@ -262,17 +259,14 @@ void Cheats::HandleEnts(const std::vector<EntityResult>& entities, CEntity& loca
 			ESP::RenderOutOfFOVArrow(localEntity, result.entity);
 		}
 
-        // skip not in screen
+		// skip not in screen
 		if (!result.isInScreen)
 		{
 			continue;
 		}
 
-		// process aimbot data
+		// process aimbot data: add all valid bones to the list
 		if (!AimControl::HitboxList.empty()) {
-			float minDistance = FLT_MAX;
-			Vec3 bestAimPos = { 0, 0, 0 };
-
 			ImVec2 screenCenter{ Gui.Window.Size.x / 2, Gui.Window.Size.y / 2 };
 
 			constexpr float DEG_TO_RAD = M_PI / 180.f;
@@ -282,23 +276,17 @@ void Cheats::HandleEnts(const std::vector<EntityResult>& entities, CEntity& loca
 			float aimFovTan = tan(AimControl::AimFov * DEG_TO_RAD / 2.f);
 			float aimFovRadius = (aimFovTan / staticFovTan) * halfWindowSize;
 
-			for (size_t i = 0; i < AimControl::HitboxList.size(); ++i) {
-				int hitboxID = AimControl::HitboxList[i];
-
+			for (int hitboxID : AimControl::HitboxList) {
 				float distanceToSight = entity.GetBone().BonePosList[hitboxID].ScreenPos.DistanceTo(
 					{ screenCenter.x, screenCenter.y });
 
-				if (distanceToSight < minDistance && distanceToSight <= aimFovRadius) {
-					minDistance = distanceToSight;
-
+				if (distanceToSight <= aimFovRadius) {
 					if (!LegitBotConfig::VisibleCheck ||
 						entity.Pawn.bSpottedByMask & (DWORD64(1) << (localPlayerControllerIndex)) ||
 						localEntity.Pawn.bSpottedByMask & (DWORD64(1) << (entityIndex))) {
-						Vec3 tempPos = entity.GetBone().BonePosList[hitboxID].Pos;
 
-						bestAimPos = tempPos;
-						aimPosList.push_back(bestAimPos);
-						MaxAimDistance = distanceToSight;
+						Vec3 bonePos = entity.GetBone().BonePosList[hitboxID].Pos;
+						aimPosList.push_back({ bonePos, hitboxID });
 					}
 				}
 			}
@@ -396,7 +384,7 @@ void Trigger(const CEntity& LocalEntity, const int& LocalPlayerControllerIndex)
 		TriggerBot::Run(LocalEntity, LocalPlayerControllerIndex);
 }
 
-void AIM(const CEntity& LocalEntity, std::vector<Vec3> AimPosList)
+void AIM(const CEntity& LocalEntity, std::vector<std::pair<Vec3, int>> AimPosList)
 {
 	DWORD lastTick = 0;
 	DWORD currentTick = GetTickCount64();

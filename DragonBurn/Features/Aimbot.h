@@ -34,15 +34,17 @@ namespace AimControl
     inline bool HasTarget = false;
     inline bool onlyAuto = false;
 
+    static bool wasAimingLastFrame = false;
     static float PrevTargetX = 0.0f;
     static float PrevTargetY = 0.0f;
     static std::random_device rd;
     static std::mt19937 gen(rd());
-   
 
-    std::pair<float, float> Humanize(float TargetX, float TargetY);
 
-    void AimBot(const CEntity& Local, Vec3 LocalPos,std::vector<Vec3>& AimPosList);
+    std::pair<float, float> Humanize(float TargetX, float TargetY, float Norm);
+
+    void AimBot(const CEntity& Local, Vec3 LocalPos, std::vector<std::pair<Vec3, int>>& AimPosList);
+    void ApplyRCS(Vec3& OppPos, const CEntity& Local);
     void switchToggle();
     std::pair<float, float> CalculateTargetOffset(const Vec2& ScreenPos, int ScreenCenterX, int ScreenCenterY);
     bool CheckAutoMode(const std::string& WeaponName);

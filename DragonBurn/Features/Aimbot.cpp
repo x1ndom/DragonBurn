@@ -1,4 +1,5 @@
 #include "Aimbot.h"
+#include "../Helpers/Mouse.h"
 #undef max()
 #undef min()
 
@@ -37,183 +38,170 @@ std::pair<float, float> AimControl::CalculateTargetOffset(const Vec2& ScreenPos,
     return { TargetX, TargetY };
 }
 
-std::pair<float, float> AimControl::Humanize(float TargetX, float TargetY) {
-
-    HumanizationStrength = std::clamp(HumanizationStrength, 0.0f, 1.0f);
-    if (HumanizationStrength <= 0.0f) {
-        PrevTargetX = TargetX;
-        PrevTargetY = TargetY;
+// New Humanize function based on the user's document
+std::pair<float, float> AimControl::Humanize(float TargetX, float TargetY, float Norm) {
+    if (!HumanizeVar) {
         return { TargetX, TargetY };
     }
-    
-    // random distributions for different types of jitter
-    std::uniform_real_distribution<float> jitterDist(-10.f, 10.f);
-    std::uniform_real_distribution<float> microDist(-10.f, 10.f);
-    std::uniform_real_distribution<float> smoothnessDist(0.4f, 10.f);
-    
-    // calculate movement distance for dynamic adjustments
-    float MovementDistance = std::sqrt(TargetX * TargetX + TargetY * TargetY);
-    
-    // add micro-movements (scaled by strength)
-    float MicroJitterX = microDist(gen) * std::min(MovementDistance * 0.25f, 8.0f) * HumanizationStrength;
-    float MicroJitterY = microDist(gen) * std::min(MovementDistance * 0.25f, 8.0f) * HumanizationStrength;
-    
-    // add larger jitter for longer movements (scaled by strength)
-    float JitterScale = std::min(MovementDistance * 0.15f, 12.0f) * HumanizationStrength;
-    float JitterX = jitterDist(gen) * JitterScale;
-    float JitterY = jitterDist(gen) * JitterScale;
-    
-    // create slightly curved path (scaled by strength)
-    float PerpX = -TargetY * 0.35f * jitterDist(gen) * HumanizationStrength;
-    float PerpY = TargetX * 0.35f * jitterDist(gen) * HumanizationStrength;
-    
-    // apply smoothing with strength-controlled factor (more aggressive smoothing variation)
-    // at strength=0, no smoothing (immediate response)
-    // at strength=1, full smoothing range with more noticeable lag
-    float baseSmoothFactor = smoothnessDist(gen);
-    float SmoothFactor = 1.0f - ((1.0f - baseSmoothFactor) * HumanizationStrength);
-    float SmoothedX = TargetX * SmoothFactor + PrevTargetX * (1.0f - SmoothFactor);
-    float SmoothedY = TargetY * SmoothFactor + PrevTargetY * (1.0f - SmoothFactor);
-    
-    // reaction time simulation - occasional delayed response
-    std::uniform_real_distribution<float> reactionDist(0.0f, 1.0f);
-    if (reactionDist(gen) < 0.15f * HumanizationStrength) { // 15% chance at full strength
-        SmoothedX = PrevTargetX; // use previous target (simulates delayed reaction)
-        SmoothedY = PrevTargetY;
+
+    // --- Dynamic Smoothing ---
+    // The closer the crosshair is to the target, the more smoothing is applied.
+    // This creates a more natural deceleration.
+    float DistRatio = Norm / AimFov; // How far we are from the target, in a [0, 1] range.
+    float SmoothingFactor = Smooth * (1.0f - DistRatio); // More smoothing closer to target.
+    SmoothingFactor = std::clamp(SmoothingFactor, 0.f, 10.f); // Clamp to avoid excessive smoothing.
+
+    float SmoothedX = TargetX / (SmoothingFactor > 1.f ? SmoothingFactor : 1.f);
+    float SmoothedY = TargetY / (SmoothingFactor > 1.f ? SmoothingFactor : 1.f);
+
+    // --- Expanded Random Jitter ---
+    // Adds small, random inaccuracies to simulate human hand tremor.
+    if (Norm > 1.0f) { // Only apply jitter for significant movements
+        std::uniform_real_distribution<float> jitter_dist(-Norm / 15.0f, Norm / 15.0f); // Jitter scales with distance
+        SmoothedX += jitter_dist(gen);
+        SmoothedY += jitter_dist(gen);
     }
     
-    // combine
-    float HumanizedX = SmoothedX + MicroJitterX + JitterX + PerpX;
-    float HumanizedY = SmoothedY + MicroJitterY + JitterY + PerpY;
+    // --- Variable Delay ---
+    // Adds a tiny, random delay to each mouse movement to break the robotic consistency.
+    std::uniform_int_distribution<> delay_dist(10, 35); // 10ms to 35ms random delay
+    std::this_thread::sleep_for(std::chrono::milliseconds(delay_dist(gen)));
+
+    // Update previous target, but with some interpolation to prevent jerky stops
+    PrevTargetX = (TargetX + PrevTargetX) / 2.0f;
+    PrevTargetY = (TargetY + PrevTargetY) / 2.0f;
     
-    // store current targets for next frame smoothing
-    PrevTargetX = TargetX;
-    PrevTargetY = TargetY;
-    
-    return { HumanizedX, HumanizedY };
+    return { SmoothedX, SmoothedY };
 }
 
-void AimControl::AimBot(const CEntity& Local, Vec3 LocalPos,std::vector<Vec3>& AimPosList)
+void AimControl::ApplyRCS(Vec3& OppPos, const CEntity& Local)
+{
+    if (!LegitBotConfig::RCS || Local.Pawn.ShotsFired <= 1)
+        return;
+
+    // Humanized RCS logic based on the document
+    std::uniform_real_distribution<float> rcs_factor(0.7f, 0.95f); // 70-95% compensation
+    std::uniform_real_distribution<float> jitter_dist(-0.1f, 0.1f); // Small random jitter
+
+    Vec2 aimPunch = Local.Pawn.AimPunchAngle;
+
+    // Apply humanized factor
+    aimPunch.x *= rcs_factor(gen);
+    aimPunch.y *= rcs_factor(gen);
+
+    // Apply jitter
+    aimPunch.x += jitter_dist(gen);
+    aimPunch.y += jitter_dist(gen);
+
+    // Convert punch angles to a vector and apply it
+    float RcsX = cos(Local.Pawn.ViewAngle.y * M_PI / 180.f) * (aimPunch.x * 2.f) - sin(Local.Pawn.ViewAngle.y * M_PI / 180.f) * (aimPunch.y * 2.f);
+    float RcsY = sin(Local.Pawn.ViewAngle.y * M_PI / 180.f) * (aimPunch.x * 2.f) + cos(Local.Pawn.ViewAngle.y * M_PI / 180.f) * (aimPunch.y * 2.f);
+    float RcsZ = aimPunch.x * 2.f; // This is a simplification, but works for vertical recoil
+
+    OppPos.x -= RcsY;
+    OppPos.y += RcsX;
+    OppPos.z -= RcsZ;
+}
+
+void AimControl::AimBot(const CEntity& Local, Vec3 LocalPos, std::vector<std::pair<Vec3, int>>& AimPosList)
 {
     if (MenuConfig::ShowMenu)
         return;
 
+    // Basic checks
     std::string curWeapon = TriggerBot::GetWeapon(Local);
-    if (!TriggerBot::CheckWeapon(curWeapon))
-        return;
-
-    if (onlyAuto && !CheckAutoMode(curWeapon))
-        return;
-
-    if (Local.Pawn.ShotsFired <= AimBullet - 1 && AimBullet != 0)
-    {
-        HasTarget = false;
+    if (!TriggerBot::CheckWeapon(curWeapon) || (onlyAuto && !CheckAutoMode(curWeapon)) || (Local.Pawn.ShotsFired <= AimBullet - 1 && AimBullet != 0)) {
+        wasAimingLastFrame = false; HasTarget = false;
         return;
     }
-
-    if (AimControl::ScopeOnly)
-    {
+    if (AimControl::ScopeOnly) {
         bool isScoped;
         memoryManager.ReadMemory<bool>(Local.Pawn.Address + Offset.Pawn.isScoped, isScoped);
-        if (!isScoped && TriggerBot::CheckScopeWeapon(curWeapon))
-        {
-            HasTarget = false;
+        if (!isScoped && TriggerBot::CheckScopeWeapon(curWeapon)) {
+            wasAimingLastFrame = false; HasTarget = false;
             return;
         }
     }
-
-    if (!IgnoreFlash && Local.Pawn.FlashDuration > 0.f)
-        return;
-
-    const int ListSize = AimPosList.size();
-    if (ListSize == 0) {
-        HasTarget = false;
+    if (!IgnoreFlash && Local.Pawn.FlashDuration > 0.f) {
+        wasAimingLastFrame = false; HasTarget = false;
         return;
     }
 
-    float BestNorm = MAXV;
-    int BestTargetIndex = -1;
-    Vec2 Angles{ 0, 0 };
-
-    const int ScreenCenterX = Gui.Window.Size.x / 2;
-    const int ScreenCenterY = Gui.Window.Size.y / 2;
-
-    for (int i = 0; i < ListSize; i++)
-    {
-        Vec3 OppPos = AimPosList[i] - LocalPos;
-        const float Distance = sqrt(OppPos.x * OppPos.x + OppPos.y * OppPos.y);
-        if (LegitBotConfig::RCS)
-        {
-            RCS::UpdateAngles(Local, Angles);
-
-            /*x*/
-            const float radX = Angles.x * RCS::RCSScale.x / 360.f * M_PI;
-            const float sinX = sinf(radX);
-            const float cosX = cosf(radX);
-
-            const float z = OppPos.z * cosX + Distance * sinX;
-            const float d = (Distance * cosX - OppPos.z * sinX) / Distance;
-
-            /*y*/
-            const float radY = -Angles.y * RCS::RCSScale.y / 360.f * M_PI;
-            const float sinY = sinf(radY);
-            const float cosY = cosf(radY);
-
-            const float x = (OppPos.x * cosY - OppPos.y * sinY) * d;
-            const float y = (OppPos.x * sinY + OppPos.y * cosY) * d;
-
-            OppPos = Vec3{ x, y, z };
-            AimPosList[i] = LocalPos + OppPos;
+    // Weighted Bone Selection
+    std::vector<std::pair<Vec3, int>> weightedAimPosList;
+    for (const auto& aimPos : AimPosList) {
+        int boneID = aimPos.second;
+        int weight = 0;
+        switch (boneID) {
+        case BONEINDEX::head: weight = 6; break; // 60%
+        case BONEINDEX::neck_0: weight = 2; break; // 20%
+        case BONEINDEX::spine_2: weight = 2; break; // 20% (chest)
+        default: weight = 1; break;
         }
-
-        const float Yaw = atan2f(OppPos.y, OppPos.x) * 57.295779513f - Local.Pawn.ViewAngle.y;
-        const float Pitch = -atan(OppPos.z / Distance) * 57.295779513f - Local.Pawn.ViewAngle.x;
-        const float Norm = sqrt(Yaw * Yaw + Pitch * Pitch);
-
-        if (Norm < BestNorm) {
-            BestNorm = Norm;
-            BestTargetIndex = i;
+        for (int i = 0; i < weight; ++i) {
+            weightedAimPosList.push_back(aimPos);
         }
     }
 
-    if (BestNorm >= AimFov || BestNorm <= AimFovMin || BestTargetIndex == -1) {
-        HasTarget = false;
+    if (weightedAimPosList.empty()) {
+        wasAimingLastFrame = false; HasTarget = false;
         return;
     }
 
+    // Select a random target from the weighted list
+    std::uniform_int_distribution<> dist(0, weightedAimPosList.size() - 1);
+    std::pair<Vec3, int> selectedTarget = weightedAimPosList[dist(gen)];
+    Vec3 finalAimPos = selectedTarget.first;
+
+    // Calculate angle to the selected target
+    Vec3 OppPos = finalAimPos - LocalPos;
+    ApplyRCS(OppPos, Local); // Apply humanized RCS
+    const float Distance = sqrt(OppPos.x * OppPos.x + OppPos.y * OppPos.y);
+    float Yaw = atan2f(OppPos.y, OppPos.x) * 57.295779513f - Local.Pawn.ViewAngle.y;
+    float Pitch = -atan(OppPos.z / Distance) * 57.295779513f - Local.Pawn.ViewAngle.x;
+    float Norm = sqrt(Yaw * Yaw + Pitch * Pitch);
+
+    if (Norm >= AimFov || Norm <= AimFovMin) {
+        wasAimingLastFrame = false; HasTarget = false;
+        return;
+    }
+
+    // Random Reaction Time
+    if (!wasAimingLastFrame) {
+        std::uniform_int_distribution<> reaction_dist(50, 200); // 50-200ms
+        std::this_thread::sleep_for(std::chrono::milliseconds(reaction_dist(gen)));
+    }
+    wasAimingLastFrame = true;
+
+    // Convert to screen coordinates and apply humanization
     Vec2 ScreenPos;
-    if (!gGame.View.WorldToScreen(AimPosList[BestTargetIndex], ScreenPos)) {
+    if (!gGame.View.WorldToScreen(finalAimPos, ScreenPos)) {
         HasTarget = false;
         return;
     }
 
     HasTarget = true;
-
+    const int ScreenCenterX = Gui.Window.Size.x / 2;
+    const int ScreenCenterY = Gui.Window.Size.y / 2;
     auto [TargetX, TargetY] = CalculateTargetOffset(ScreenPos, ScreenCenterX, ScreenCenterY);
 
-    TargetX /= Local.Client.Sensitivity /4;
-    TargetY /= Local.Client.Sensitivity /4;
-    if (Smooth > 0.0f)
-    {
-        const float DistanceRatio = BestNorm / AimFov;
-        const float SpeedFactor = 1.0f + (1.0f - DistanceRatio);
-        TargetX /= (Smooth * SpeedFactor);
-        TargetY /= (Smooth * SpeedFactor);
-    }
+    TargetX /= Local.Client.Sensitivity / 4;
+    TargetY /= Local.Client.Sensitivity / 4;
 
-    if (HumanizeVar)
-    {
-        auto [HumanizedX, HumanizedY] = Humanize(TargetX, TargetY);
+    if (HumanizeVar) {
+        auto [HumanizedX, HumanizedY] = Humanize(TargetX, TargetY, Norm);
         TargetX = HumanizedX;
         TargetY = HumanizedY;
+    } else if (Smooth > 0.0f) {
+        TargetX /= Smooth;
+        TargetY /= Smooth;
     }
 
+    // Move mouse
     static DWORD lastAimTime = GetTickCount64();
     DWORD currentTick = GetTickCount64();
-
-    if (currentTick - lastAimTime >= MenuConfig::AimDelay)
-    {
-        mouse_event(MOUSEEVENTF_MOVE, TargetX, TargetY, NULL, NULL);
+    if (currentTick - lastAimTime >= MenuConfig::AimDelay) {
+        mouse_move(0, static_cast<char>(TargetX), static_cast<char>(TargetY), 0);
         lastAimTime = currentTick;
     }
 }

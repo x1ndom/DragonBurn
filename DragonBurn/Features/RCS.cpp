@@ -1,4 +1,5 @@
 #include "RCS.h"
+#include "../Helpers/Mouse.h"
 #include "../Helpers/Logger.h"
 #include <cmath>
 
@@ -75,7 +76,7 @@ void RCS::RecoilControl(CEntity LocalPlayer)
 
 		if ((GetAsyncKeyState(VK_LBUTTON) & 0x8000))
 		{
-            mouse_event(MOUSEEVENTF_MOVE, MouseX, MouseY, NULL, NULL);
+            mouse_move(0, static_cast<char>(MouseX), static_cast<char>(MouseY), 0);
 		}
 
 		OldPunch = LocalPlayer.Pawn.AimPunchAngle;
